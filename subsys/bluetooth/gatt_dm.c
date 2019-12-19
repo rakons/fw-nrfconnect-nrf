@@ -37,6 +37,8 @@ struct bt_gatt_dm {
 
 	/* The discovery parameters used */
 	struct bt_gatt_discover_params discover_params;
+	/* The read parameters used */
+	struct bt_gatt_read_params read_params;
 	/* Currently parsed attributes */
 	struct bt_gatt_attr attrs[CONFIG_BT_GATT_DM_MAX_ATTRS];
 	/* Currently accessed attribute */
@@ -228,6 +230,21 @@ static struct bt_uuid *uuid_store(struct bt_gatt_dm *dm,
 	}
 }
 
+/* Left internal as it seems not to make a sense to allow searching through
+ * all the attributes. */
+static const struct bt_gatt_attr *bt_gatt_dm_attr_by_uuid(
+	const struct bt_gatt_dm *dm,
+	const struct bt_uuid *uuid)
+{
+	const struct bt_gatt_attr *curr = NULL;
+
+	while ((curr = bt_gatt_dm_attr_next(dm, curr)) != NULL) {
+		if (!bt_uuid_cmp(uuid, curr->uuid))
+			break;
+	}
+	return curr;
+}
+
 static void discovery_complete(struct bt_gatt_dm *dm)
 {
 	LOG_DBG("Discovery complete.");
@@ -361,7 +378,15 @@ static u8_t discovery_process_characteristic(
 		struct bt_gatt_discover_params *params)
 {
 	if (!attr) {
-		discovery_complete(dm);
+		/* Characteristic is handled after all the attributes
+		 * are loaded. */
+		/* Check if we have any CEP to process now and if we do,
+		 * read them now */
+		if (!bt_gatt_dm_attr_by_uuid(dm, BT_UUID_GATT_CEP)) {
+
+		} else {
+			discovery_complete(dm);
+		}
 		return BT_GATT_ITER_STOP;
 	}
 
@@ -437,6 +462,15 @@ struct bt_gatt_chrc *bt_gatt_dm_attr_chrc_val(
 	const struct bt_gatt_attr *attr)
 {
 	if (!bt_uuid_cmp(BT_UUID_GATT_CHRC, attr->uuid)) {
+		return attr->user_data;
+	}
+	return NULL;
+}
+
+struct bt_gatt_cep *bt_gatt_dm_attr_cep_val(
+	const struct bt_gatt_attr *attr)
+{
+	if (!bt_uuid_cmp(BT_UUID_GATT_CEP, attr->uuid)) {
 		return attr->user_data;
 	}
 	return NULL;
@@ -670,6 +704,11 @@ static void chrc_attr_data_print(const struct bt_gatt_chrc *gatt_chrc)
 			str, gatt_chrc->properties);
 }
 
+static void cep_attr_data_print(const struct bt_gatt_cep *gatt_cep)
+{
+	printk("\tCEP: 0x%04X\n", gatt_cep->properties);
+}
+
 static void attr_print(const struct bt_gatt_dm *dm,
 		       const struct bt_gatt_attr *attr)
 {
@@ -686,6 +725,8 @@ static void attr_print(const struct bt_gatt_dm *dm,
 		chrc_attr_data_print(attr->user_data);
 	} else if (bt_uuid_cmp(attr->uuid, BT_UUID_GATT_CCC) == 0) {
 		printk("\tCCCD\n");
+	} else if (bt_uuid_cmp(attr->uuid, BT_UUID_GATT_CEP) == 0) {
+		cep_attr_data_print(attr->user_data);
 	}
 }
 

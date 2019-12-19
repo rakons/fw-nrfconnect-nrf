@@ -105,6 +105,16 @@ struct bt_gatt_service_val *bt_gatt_dm_attr_service_val(
 struct bt_gatt_chrc *bt_gatt_dm_attr_chrc_val(
 	const struct bt_gatt_attr *attr);
 
+/** @brief Access value saved with Characteristic Extended Properties attribute
+ *
+ * @param[in] attr Characteristic Extended Properties attribute
+ *
+ * @return The characteristic value from parser attribute
+ *         or NULL when attribute UUID value is unexpected.
+ */
+struct bt_gatt_cep *bt_gatt_dm_attr_cep_val(
+	const struct bt_gatt_attr *attr);
+
 /** @brief Get the connection object
  *
  * Function returns connection object that is used by given

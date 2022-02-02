@@ -160,6 +160,7 @@ Kconfig*                                  @tejlmand
 /subsys/esb/                              @lemrey
 /subsys/event_manager/                    @pdunaj
 /subsys/event_manager_profiler_tracer/    @pdunaj @MarekPieta
+/subsys/event_manager_proxy/              @rakons
 /subsys/fw_info/                          @hakonfam
 /subsys/gazell/                           @leewkb4567
 /subsys/mpsl/                             @rugeGerritsen

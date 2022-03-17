@@ -30,60 +30,51 @@ struct emp_data {
  * Commands used for data transfer between cores.
  */
 enum emp_cmd_code {
-	/**
-	 * @brief Register for an event
-	 *
-	 * This command is used to register for an event between cores.
-	 */
+	/** Register for an event on another core. */
 	EMP_CMD_REGISTER,
-	/**
-	 * @brief Start event transmission
-	 *
-	 * After this command is sent, there the data that follows would be
-	 * treated as event data. No more registering commands may be sent.
+
+	/** Start event transmission.
+	 * No commands are allowed after this point. The following data is related to events.
 	 */
 	EMP_CMD_START,
-	/**
-	 * @brief Command response
-	 *
-	 * This command is used as an response to the command.
-	 */
+
+	/** Command response. */
 	EMP_CMD_RSP,
+
+	/** Number of commands. */
+	EMP_CMD_COUNT
 };
 
 /**
- * @brief The command base structure
- *
- * The command structure used to decode the command type
+ * @brief The command base structure.
  */
 struct emp_cmd {
-	/** @brief The command code */
+	/** The command code */
 	enum emp_cmd_code cmd;
 };
 
 /**
  * @brief The command structure used to register
- *
- * The command to register the event listener.
  */
 struct emp_cmd_register {
-	/** @brief The command code */
+	/** The command code. */
 	enum emp_cmd_code cmd;
-	/** @brief The identifier to use to send the event */
+
+	/** The event identifier to be used for the matching name. */
 	const struct event_type *id;
-	/** @brief The name of the event */
+
+	/** The name of the event. */
 	char name[];
 };
 
 /**
- * @brief The command structure used for the response
- *
- * The "command" that would be sent as a response to the command received.
+ * @brief The response command structure.
  */
 struct emp_cmd_rsp {
-	/** @brief The command code */
+	/** The command code. */
 	enum emp_cmd_code cmd;
-	/** @brief The command identifier
+
+	/** The command identifier.
 	 *
 	 *  The identifier of the command for this response:
 	 *  - For the @ref EMB_CMD_REGISTER command it is set to the value of
@@ -91,7 +82,8 @@ struct emp_cmd_rsp {
 	 *  - For the @ref EMB_CMD_START command it is set to NULL.
 	 */
 	const struct event_type *id;
-	/** @brief The operation result code */
+
+	/** The operation result code. */
 	int res;
 };
 
@@ -101,44 +93,36 @@ struct emp_cmd_rsp {
  * The data needed to organize communication between cores
  */
 struct emp_ipc_data {
-	/**
-	 * @brief Endpoint
-	 *
-	 * The endpoint used for communication
-	 */
+	/** Endpoint used for communication. */
 	struct ipc_ept ept;
-	/**
-	 * @brief Endpoint configuration
-	 *
-	 * Local copy of the configuration of the endpoint.
+
+	/** Endpoint configuration - local copy.
 	 * We need to set @ref ipc_ept_cfg::priv field here at runtime.
 	 */
 	struct ipc_ept_cfg ept_cfg;
-	/**
-	 * @brief Flag that marks that this structure is used
-	 */
+
+	/** Flag marking this structure is used. */
 	bool used;
-	/**
-	 * @brief Flag that marks the endpoint as started
+
+	/** Flag marking the endpoint is started
 	 *
 	 * Started endpoint sends no more configuration commands.
-	 * All data received here has to be treated as an event.
+	 * All data received here has to be treated as events.
 	 */
 	bool started;
-	/**
-	 * @brief Event used to mark endpoint bonded
+
+	/** Bonded endpoint kernel event.
 	 *
-	 * This event is set when the endpoint is connected
+	 * This event is triggered when the endpoint is connected
 	 * on the other core and ready to transmit data.
 	 * Never clear this event.
 	 */
 	struct k_event bonded;
-	/**
-	 * @brief Semaphore that marks received response
-	 */
+
+	/** Semaphore synchronizing responses. */
 	struct k_sem rsp_ready;
-	/**
-	 * @brief Response structure
+
+	/** Response structure.
 	 *
 	 * The structure serves 2 purposes:
 	 * 1. It holds last response received.
@@ -148,10 +132,11 @@ struct emp_ipc_data {
 		const struct event_type *id;
 		int res;
 	} rsp;
-	/**
-	 * @brief Response work
+
+	/** Response work
 	 *
 	 * The work used to send the response.
+	 *
 	 * @note
 	 * We wish to send responses to the command received from IPC.
 	 * The issue is that sending it directly from the @em received callback
@@ -163,7 +148,7 @@ struct emp_ipc_data {
 };
 
 
-/* Create structures just for the linker to count its sizes */
+/* Helpers - allow linker to get information about these structure sizes. */
 struct event_type event_manager_type_size_check
 	__attribute__((__section__("event_manager_type_size")));
 struct emp_data event_manger_proxy_type_ptr_size_check
@@ -467,20 +452,6 @@ static void ipc_ept_error(const char *message, void *priv)
 	__ASSERT_NO_MSG(false);
 }
 
-/**
- * @brief The configuration of the endpoint
- *
- * The base configuration of the endpoint.
- */
-static const struct ipc_ept_cfg emp_ipc_ept_cfg_base = {
-	.name = "event_manager_proxy",
-	.cb = {
-		.bound    = ipc_ept_bound,
-		.received = ipc_ept_recv,
-		.error    = ipc_ept_error
-	},
-};
-
 static int event_manager_proxy_init(void)
 {
 	memset(event_manager_proxy_array,
@@ -493,42 +464,75 @@ EVENT_MANAGER_HOOK_POSTINIT_REGISTER(event_manager_proxy_init);
 
 static void event_manager_proxy_on_event_process(const struct event_header *eh)
 {
-	if (!emp_started)
+	if (!emp_started) {
 		return;
+	}
 
-	size_t idx = ev2idx(eh->type_id);
-	size_t n;
+	struct emp_data *emp = &event_manager_proxy_array[ev2idx(eh->type_id)];
 
-	for (n = 0; n < CONFIG_EVENT_MANAGER_PROXY_CH_COUNT; ++n) {
-		const struct event_type *remote_ev = event_manager_proxy_array[idx].event[n];
-		struct emp_ipc_data *ipc = &emp_ipc_data[n];
+	for (size_t i = 0; i < CONFIG_EVENT_MANAGER_PROXY_CH_COUNT; ++i) {
+		const struct event_type *remote_ev = emp->event[i];
+		struct emp_ipc_data *ipc = &emp_ipc_data[i];
 
-		if (!ipc->used || !ipc->started) {
+		if (!ipc->used || !ipc->started || (remote_ev == NULL)) {
 			continue;
 		}
-		if (remote_ev) {
-			size_t len = event_manager_event_size(eh);
-			struct event_header *remote_eh = event_manager_alloc(len);
-			int ret;
 
-			memcpy(remote_eh, eh, len);
-			remote_eh->type_id = remote_ev;
-			ret = ipc_service_send(&ipc->ept, remote_eh, len);
-			event_manager_free(remote_eh);
-			if (ret < 0) {
-				LOG_ERR("Cannot send event to remote %d", n);
-				__ASSERT_NO_MSG(false);
-			}
+		size_t len = event_manager_event_size(eh);
+		struct event_header *remote_eh = event_manager_alloc(len);
+
+		memcpy(remote_eh, eh, len);
+		remote_eh->type_id = remote_ev;
+
+		int ret = ipc_service_send(&ipc->ept, remote_eh, len);
+		event_manager_free(remote_eh);
+		if (ret < 0) {
+			LOG_ERR("Cannot send event to remote %d", i);
+			__ASSERT_NO_MSG(false);
 		}
 	}
 }
 
 EVENT_HOOK_POSTPROCESS_REGISTER(event_manager_proxy_on_event_process);
 
+
+static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instance)
+{
+	int ret = ipc_service_open_instance(instance);
+	if (ret && ret != -EALREADY) {
+		LOG_ERR("IPC service open instance failure: %d", ret);
+		return ret;
+	}
+
+	ipc->started = false;
+	ipc->ept_cfg = (struct ipc_ept_cfg) {
+		.name = "event_manager_proxy",
+		.cb = {
+			.bound    = ipc_ept_bound,
+			.received = ipc_ept_recv,
+			.error    = ipc_ept_error
+		},
+		.priv = ipc
+	};
+
+	ret = ipc_service_register_endpoint(instance, &ipc->ept, &ipc->ept_cfg);
+	if (ret) {
+		LOG_ERR("Error registering endpoint in ipc service (%d)", ret);
+		return ret;
+	}
+
+	k_event_init(&ipc->bonded);
+	ret = k_sem_init(&ipc->rsp_ready, 0, 1);
+	__ASSERT_NO_MSG(ret == 0);
+	k_work_init(&ipc->rsp_work, send_rsp_worker);
+
+	ipc->used = true;
+
+	return 0;
+}
+
 int event_manager_proxy_add_remote(const struct device *instance)
 {
-	int ret;
-
 	__ASSERT(
 		(__end_event_proxy_array - event_manager_proxy_array)
 		==
@@ -536,116 +540,123 @@ int event_manager_proxy_add_remote(const struct device *instance)
 		, "Event manager proxy array size does not match event type array size (%u != %u)",
 			(__end_event_proxy_array - event_manager_proxy_array),
 			(_event_type_list_end - _event_type_list_start));
-
 	__ASSERT_NO_MSG(find_ipc_by_instance(instance) == NULL);
-	ret = ipc_service_open_instance(instance);
-	if (ret && ret != -EALREADY) {
-		LOG_ERR("IPC service open instance failure: %d", ret);
-		return ret;
-	}
-	/* Searching for a space for the instance */
-	for (size_t n = 0; n < ARRAY_SIZE(emp_ipc_data); ++n) {
-		struct emp_ipc_data *ipc_data = &emp_ipc_data[n];
 
-		if (!ipc_data->used) {
-			int ret;
-
-			ipc_data->ept_cfg = emp_ipc_ept_cfg_base;
-			ipc_data->ept_cfg.priv = ipc_data;
-			ret = ipc_service_register_endpoint(
-				instance,
-				&ipc_data->ept,
-				&ipc_data->ept_cfg);
-			if (ret) {
-				LOG_ERR("Error registering endpoint in ipc service (%d)", ret);
-				return ret;
-			}
-			ipc_data->used = true;
-			ipc_data->started = false;
-			k_event_init(&ipc_data->bonded);
-			ret = k_sem_init(&ipc_data->rsp_ready, 0, 1);
-			__ASSERT_NO_MSG(ret == 0);
-			k_work_init(&ipc_data->rsp_work, send_rsp_worker);
-			return 0;
+	for (size_t i = 0; i < ARRAY_SIZE(emp_ipc_data); ++i) {
+		if (!emp_ipc_data[i].used) {
+			return add_ipc_instace(&emp_ipc_data[i], instance);
 		}
 	}
 
 	LOG_ERR("No free space for another remote");
+
 	return -ENOMEM;
 }
 
-int event_manager_proxy_register_listener(
-	const struct device *instance,
-	const struct event_type *local_event_id,
-	const char *remote_event_name)
+static int send_register_command(struct emp_ipc_data *ipc, const struct event_type *local_event_id,
+		const char *remote_event_name)
 {
-	int ret;
-	struct emp_ipc_data *ipc;
-	struct emp_cmd_register *cmd;
-	size_t cmd_size;
-
-	__ASSERT_NO_MSG(!emp_started);
-	ipc = find_ipc_by_instance(instance);
 	__ASSERT_NO_MSG(ipc);
 
-	/* Waiting till the endpoint is bonded */
 	if (!k_event_wait(&ipc->bonded, 0x1, false, EMP_BOND_TIMEOUT)) {
 		LOG_ERR("IPC bond timeout");
 		return -EPIPE;
 	}
 
 	/* Preparing and sending the command */
-	cmd_size = sizeof(*cmd) + strlen(remote_event_name) + 1;
-	cmd = k_malloc(cmd_size);
-	__ASSERT_NO_MSG(cmd);
-	memset(cmd, 0, cmd_size);
+	struct emp_cmd_register *cmd;
+	size_t size = sizeof(*cmd) + strlen(remote_event_name) + 1;
+
+	cmd = k_malloc(size);
+
+	if (cmd == NULL) {
+		LOG_ERR("No mem");
+		return -ENOMEM;
+	}
+
 	cmd->cmd = EMP_CMD_REGISTER;
 	cmd->id  = local_event_id;
 	strcpy(cmd->name, remote_event_name);
 
-	ret = ipc_service_send(&ipc->ept, cmd, cmd_size);
+	int ret = ipc_service_send(&ipc->ept, cmd, size);
+
 	k_free(cmd);
+
 	if (ret < 0) {
 		return ret;
 	}
-	/* Waiting for response */
+
+	return 0;
+}
+
+static int wait_for_register_respose(struct emp_ipc_data *ipc, const struct event_type *local_event_id)
+{
 	if (k_sem_take(&ipc->rsp_ready, EMP_RSP_TIMEOUT)) {
-		ret = -ETIME;
-	} else {
-		__ASSERT_NO_MSG(local_event_id == ipc->rsp.id);
-		ret = ipc->rsp.res;
+		return -ETIME;
+	}
+
+	__ASSERT_NO_MSG(local_event_id == ipc->rsp.id);
+	if (local_event_id != ipc->rsp.id) {
+		return -EFAULT;
+	}
+
+	return ipc->rsp.res;
+}
+
+int event_manager_proxy_register_listener(const struct device *instance,
+		const struct event_type *local_event_id, const char *remote_event_name)
+{
+	__ASSERT_NO_MSG(!emp_started);
+
+	struct emp_ipc_data *ipc = find_ipc_by_instance(instance);
+
+	int ret = send_register_command(ipc, local_event_id, remote_event_name);
+
+	if (!ret) {
+		ret = wait_for_register_respose(ipc, local_event_id);
 	}
 
 	return ret;
 }
 
+static int send_start_command(struct emp_ipc_data *ipc)
+{
+	static const struct emp_cmd cmd = {.cmd = EMP_CMD_START};
+
+	__ASSERT_NO_MSG(ipc);
+
+	if (!ipc->used) {
+		return 0;
+	}
+
+	if (!k_event_wait(&ipc->bonded, 0x1, false, EMP_BOND_TIMEOUT)) {
+		LOG_ERR("IPC bond timeout");
+		return -EPIPE;
+	}
+
+	int ret = ipc_service_send(&ipc->ept, &cmd, sizeof(cmd));
+	if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
+}
+
 int event_manager_proxy_start(void)
 {
-	/* Send start command to the all connected cores */
-	int ret;
-	static struct emp_cmd cmd = {.cmd = EMP_CMD_START};
+	int ret = 0;
 
 	__ASSERT_NO_MSG(!emp_started);
 
-	for (size_t n = 0; n < ARRAY_SIZE(emp_ipc_data); ++n) {
-		if (emp_ipc_data[n].used) {
-			struct emp_ipc_data *ipc = &emp_ipc_data[n];
-
-			/* Waiting till the endpoint is bonded */
-			if (!k_event_wait(&ipc->bonded, 0x1, false, EMP_BOND_TIMEOUT)) {
-				LOG_ERR("IPC bond timeout");
-				return -EPIPE;
-			}
-
-			ret = ipc_service_send(&ipc->ept, &cmd, sizeof(cmd));
-			if (ret < 0) {
-				return ret;
-			}
-		}
+	for (size_t i = 0; (i < ARRAY_SIZE(emp_ipc_data)) && !ret; ++i) {
+		ret = send_start_command(&emp_ipc_data[i]);
 	}
-	/* Mark this ipc instance started */
-	emp_started = true;
-	return 0;
+
+	if (!ret) {
+		emp_started = true;
+	}
+
+	return ret;
 }
 
 int event_manager_proxy_wait_for_remotes(k_timeout_t timeout)
@@ -655,5 +666,6 @@ int event_manager_proxy_wait_for_remotes(k_timeout_t timeout)
 	if (!k_event_wait(&emp_all_remotes_started, 0x1, false, timeout)) {
 		return -ETIME;
 	}
+
 	return 0;
 }

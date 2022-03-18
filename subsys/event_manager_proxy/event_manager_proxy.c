@@ -614,7 +614,7 @@ int event_manager_proxy_register_listener(const struct device *instance,
 
 static int send_start_command(struct emp_ipc_data *ipc)
 {
-	static const struct emp_cmd cmd = {.cmd = EMP_CMD_START};
+	const struct emp_cmd cmd = {.cmd = EMP_CMD_START};
 
 	__ASSERT_NO_MSG(ipc);
 

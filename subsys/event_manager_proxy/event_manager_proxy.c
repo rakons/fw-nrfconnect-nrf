@@ -462,34 +462,48 @@ static int event_manager_proxy_init(void)
 
 EVENT_MANAGER_HOOK_POSTINIT_REGISTER(event_manager_proxy_init);
 
+static int send_event(struct emp_ipc_data *ipc, const struct event_header *eh)
+{
+	const struct emp_data *emp = &event_manager_proxy_array[ev2idx(eh->type_id)];
+	const size_t ipc_idx = ipc - &emp_ipc_data[0];
+	const struct event_type *remote_ev = emp->event[ipc_idx];
+
+	if (remote_ev == NULL) {
+		return 0;
+	}
+
+	size_t size = event_manager_event_size(eh);
+	uint8_t __aligned(4) buffer[size];
+	struct event_header *remote_eh = (struct event_header *)buffer;
+
+	memcpy(buffer, eh, sizeof(buffer));
+	remote_eh->type_id = remote_ev;
+
+	int ret = ipc_service_send(&ipc->ept, buffer, sizeof(buffer));
+	if (ret < 0) {
+		LOG_ERR("Cannot send event to remote %p", ipc);
+		__ASSERT_NO_MSG(false);
+	}
+
+	return ret;
+}
+
 static void event_manager_proxy_on_event_process(const struct event_header *eh)
 {
+	int ret = 0;
+
 	if (!emp_started) {
 		return;
 	}
 
-	struct emp_data *emp = &event_manager_proxy_array[ev2idx(eh->type_id)];
-
-	for (size_t i = 0; i < CONFIG_EVENT_MANAGER_PROXY_CH_COUNT; ++i) {
-		const struct event_type *remote_ev = emp->event[i];
+	for (size_t i = 0; (i < ARRAY_SIZE(emp_ipc_data)) && !ret; ++i) {
 		struct emp_ipc_data *ipc = &emp_ipc_data[i];
 
-		if (!ipc->used || !ipc->started || (remote_ev == NULL)) {
+		if (!ipc->used || !ipc->started) {
 			continue;
 		}
 
-		size_t len = event_manager_event_size(eh);
-		struct event_header *remote_eh = event_manager_alloc(len);
-
-		memcpy(remote_eh, eh, len);
-		remote_eh->type_id = remote_ev;
-
-		int ret = ipc_service_send(&ipc->ept, remote_eh, len);
-		event_manager_free(remote_eh);
-		if (ret < 0) {
-			LOG_ERR("Cannot send event to remote %d", i);
-			__ASSERT_NO_MSG(false);
-		}
+		ret = send_event(ipc, eh);
 	}
 }
 
@@ -573,7 +587,7 @@ static int send_register_command(struct emp_ipc_data *ipc, const struct event_ty
 	cmd->id  = local_event_id;
 	strcpy(cmd->name, remote_event_name);
 
-	int ret = ipc_service_send(&ipc->ept, cmd, size);
+	int ret = ipc_service_send(&ipc->ept, buffer, sizeof(buffer));
 
 	if (ret < 0) {
 		return ret;
@@ -618,10 +632,6 @@ static int send_start_command(struct emp_ipc_data *ipc)
 
 	__ASSERT_NO_MSG(ipc);
 
-	if (!ipc->used) {
-		return 0;
-	}
-
 	if (!k_event_wait(&ipc->bonded, 0x1, false, EMP_BOND_TIMEOUT)) {
 		LOG_ERR("IPC bond timeout");
 		return -EPIPE;
@@ -642,6 +652,10 @@ int event_manager_proxy_start(void)
 	__ASSERT_NO_MSG(!emp_started);
 
 	for (size_t i = 0; (i < ARRAY_SIZE(emp_ipc_data)) && !ret; ++i) {
+		if (!ipc->used) {
+			continue;
+		}
+
 		ret = send_start_command(&emp_ipc_data[i]);
 	}
 

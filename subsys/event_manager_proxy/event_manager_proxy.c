@@ -234,7 +234,7 @@ static struct event_type *find_event_by_name(const char *name)
  *
  * @return Index of the event
  */
-static size_t ev2idx(const struct event_type *et)
+static size_t et2idx(const struct event_type *et)
 {
 	ASSERT_EVENT_ID(et);
 
@@ -247,14 +247,12 @@ static size_t ev2idx(const struct event_type *et)
  * The function that changes the pointer used by ipc callbacks to the index
  * in @ref emp_ipc_data array.
  *
- * @param priv The pointer of the related element in the @ref emp_ipc_data array.
+ * @param ipc Element of the @ref emp_ipc_data array.
  *
  * @return The index of provided pointer in the array.
  */
-static size_t ept2idx(const void *priv)
+static size_t ipc2idx(const struct emp_ipc_data *ipc)
 {
-	const struct emp_ipc_data *ipc = priv;
-
 	__ASSERT_NO_MSG(PART_OF_ARRAY(emp_ipc_data, ipc));
 
 	return ipc - emp_ipc_data;
@@ -263,7 +261,7 @@ static size_t ept2idx(const void *priv)
 /**
  * @brief Worker that sends the response to the command.
  *
- * The response work is submitted by @ref submit_rsp function.
+ * The response work is submitted by @ref send_response_to_remote function.
  *
  * @param work The pointer to @ref emp_ipc_data::rsp_work.
  */
@@ -294,7 +292,7 @@ static void send_rsp_worker(struct k_work *work)
  * @retval 0 Function finished successfully.
  * @retval other The error code.
  */
-static int submit_rsp(struct emp_ipc_data *ipc, const struct event_type *id, int res)
+static int send_response_to_remote(struct emp_ipc_data *ipc, const struct event_type *id, int res)
 {
 	int ret;
 
@@ -358,14 +356,14 @@ static void handle_remote_command_register(struct emp_ipc_data *ipc, const void 
 		LOG_ERR("Cannot register event: %s", log_strdup(cmd->name));
 		ret = -ENOENT;
 	} else {
-		size_t ctx_idx = ept2idx(ipc);
-		size_t ev_idx = ev2idx(et);
+		size_t ctx_idx = ipc2idx(ipc);
+		size_t et_idx = et2idx(et);
 
-		event_manager_proxy_array[ev_idx].event[ctx_idx] = cmd->id;
+		event_manager_proxy_array[et_idx].event[ctx_idx] = cmd->id;
 		LOG_DBG("Remote event %s registered on ipc %zu", log_strdup(cmd->name), ctx_idx);
 	}
 
-	ret = submit_rsp(ipc, cmd->id, ret);
+	ret = send_response_to_remote(ipc, cmd->id, ret);
 	__ASSERT_NO_MSG(ret);
 }
 
@@ -379,7 +377,7 @@ static void handle_remote_command_start(struct emp_ipc_data *ipc, const void *da
 
 	ipc->started = true;
 
-	LOG_DBG("Event transmission on ipc %d started", ept2idx(ipc));
+	LOG_DBG("Event transmission on ipc %d started", ipc2idx(ipc));
 
 	/* Check if all remote cores started. */
 	for (size_t i = 0; i < ARRAY_SIZE(emp_ipc_data); ++i) {
@@ -488,9 +486,9 @@ static int event_manager_proxy_init(void)
 
 EVENT_MANAGER_HOOK_POSTINIT_REGISTER(event_manager_proxy_init);
 
-static int send_event(struct emp_ipc_data *ipc, const struct event_header *eh)
+static int send_event_to_remote(struct emp_ipc_data *ipc, const struct event_header *eh)
 {
-	const struct emp_data *emp = &event_manager_proxy_array[ev2idx(eh->type_id)];
+	const struct emp_data *emp = &event_manager_proxy_array[et2idx(eh->type_id)];
 	const size_t ipc_idx = ipc - &emp_ipc_data[0];
 	const struct event_type *remote_ev = emp->event[ipc_idx];
 
@@ -529,7 +527,7 @@ static void event_manager_proxy_on_event_process(const struct event_header *eh)
 			continue;
 		}
 
-		ret = send_event(ipc, eh);
+		ret = send_event_to_remote(ipc, eh);
 	}
 }
 
@@ -593,7 +591,7 @@ int event_manager_proxy_add_remote(const struct device *instance)
 	return -ENOMEM;
 }
 
-static int send_register_command(struct emp_ipc_data *ipc, const struct event_type *local_event_id,
+static int send_register_command_to_remote(struct emp_ipc_data *ipc, const struct event_type *local_event_id,
 		const char *remote_event_name)
 {
 	__ASSERT_NO_MSG(ipc);
@@ -643,7 +641,7 @@ int event_manager_proxy_register_listener(const struct device *instance,
 
 	struct emp_ipc_data *ipc = find_ipc_by_instance(instance);
 
-	int ret = send_register_command(ipc, local_event_id, remote_event_name);
+	int ret = send_register_command_to_remote(ipc, local_event_id, remote_event_name);
 
 	if (!ret) {
 		ret = wait_for_register_respose(ipc, local_event_id);
@@ -652,7 +650,7 @@ int event_manager_proxy_register_listener(const struct device *instance,
 	return ret;
 }
 
-static int send_start_command(struct emp_ipc_data *ipc)
+static int send_start_command_to_remote(struct emp_ipc_data *ipc)
 {
 	const struct emp_cmd cmd = {.cmd = EMP_CMD_START};
 
@@ -684,7 +682,7 @@ int event_manager_proxy_start(void)
 			continue;
 		}
 
-		ret = send_start_command(ipc);
+		ret = send_start_command_to_remote(ipc);
 	}
 
 	if (!ret) {

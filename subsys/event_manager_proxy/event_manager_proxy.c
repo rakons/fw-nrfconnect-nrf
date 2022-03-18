@@ -50,7 +50,7 @@ enum emp_cmd_code {
  */
 struct emp_cmd {
 	/** The command code */
-	enum emp_cmd_code cmd;
+	enum emp_cmd_code code;
 };
 
 /**
@@ -58,7 +58,7 @@ struct emp_cmd {
  */
 struct emp_cmd_register {
 	/** The command code. */
-	enum emp_cmd_code cmd;
+	enum emp_cmd_code code;
 
 	/** The event identifier to be used for the matching name. */
 	const struct event_type *id;
@@ -72,7 +72,7 @@ struct emp_cmd_register {
  */
 struct emp_cmd_rsp {
 	/** The command code. */
-	enum emp_cmd_code cmd;
+	enum emp_cmd_code code;
 
 	/** The command identifier.
 	 *
@@ -119,32 +119,19 @@ struct emp_ipc_data {
 	 */
 	struct k_event bonded;
 
-	/** Semaphore synchronizing responses. */
-	struct k_sem rsp_ready;
-
-	/** Response structure.
-	 *
-	 * The structure serves 2 purposes:
-	 * 1. It holds last response received.
-	 * 2. It serves the data required to send response from workqueue.
-	 */
-	struct {
+	/** Deferred response to remote request. */
+	struct remote_response {
+		struct k_work work;
 		const struct event_type *id;
 		int res;
-	} rsp;
+	} remote_response;
 
-	/** Response work
-	 *
-	 * The work used to send the response.
-	 *
-	 * @note
-	 * We wish to send responses to the command received from IPC.
-	 * The issue is that sending it directly from the @em received callback
-	 * may put this thread to wait for the buffer being available.
-	 * If the only buffer available is the one used by the callback
-	 * we may wait here forever as it would be freed only when the callback function returns.
-	 */
-	struct k_work rsp_work;
+	/** Local response. */
+	struct local_response {
+		struct k_sem ready;
+		const struct event_type *id;
+		int res;
+	} local_response;
 };
 
 
@@ -263,18 +250,17 @@ static size_t ipc2idx(const struct emp_ipc_data *ipc)
  *
  * The response work is submitted by @ref send_response_to_remote function.
  *
- * @param work The pointer to @ref emp_ipc_data::rsp_work.
+ * @param work The pointer to @ref emp_ipc_data::remote_response::work.
  */
 static void send_rsp_worker(struct k_work *work)
 {
-	struct emp_ipc_data *ipc = CONTAINER_OF(work, struct emp_ipc_data, rsp_work);
+	struct emp_ipc_data *ipc = CONTAINER_OF(CONTAINER_OF(work, struct remote_response, work),
+						struct emp_ipc_data, remote_response);
 	const struct emp_cmd_rsp rsp = {
-		.cmd = EMP_CMD_RSP,
-		.id  = ipc->rsp.id,
-		.res = ipc->rsp.res
+		.code = EMP_CMD_RSP,
+		.id  = ipc->remote_response.id,
+		.res = ipc->remote_response.res
 	};
-
-	__ASSERT_NO_MSG(k_sem_count_get(&ipc->rsp_ready) == 0);
 
 	int ret = ipc_service_send(&ipc->ept, &rsp, sizeof(rsp));
 	__ASSERT_NO_MSG(ret >= 0);
@@ -294,18 +280,14 @@ static void send_rsp_worker(struct k_work *work)
  */
 static int send_response_to_remote(struct emp_ipc_data *ipc, const struct event_type *id, int res)
 {
-	int ret;
+	ipc->remote_response.id = id;
+	ipc->remote_response.res = res;
 
-	/* When we are going to send the rsp - there should not be response prepared already */
-	ret = k_sem_take(&ipc->rsp_ready, K_NO_WAIT);
-	if (ret == 0) {
-		LOG_ERR("Response received ready during response submitting");
-	}
+	/* Defer response to workqueue to allow IPC buffer being freed.
+	 * If done directly can cause lock when no buffers available.
+	 */
+	int ret = k_work_submit(&ipc->remote_response.work);
 
-	ipc->rsp.id = id;
-	ipc->rsp.res = res;
-
-	ret = k_work_submit(&ipc->rsp_work);
 	return ret;
 }
 
@@ -321,7 +303,7 @@ static void handle_ipc_endpoint_bound(void *priv)
 {
 	struct emp_ipc_data *ipc = priv;
 
-	k_event_set(&(ipc->bonded), 0x1);
+	k_event_set(&ipc->bonded, 0x1);
 }
 
 static void handle_remote_event(struct emp_ipc_data *ipc, const void *data, size_t len)
@@ -401,14 +383,12 @@ static void handle_remote_command_response(struct emp_ipc_data *ipc, const void 
 		return;
 	}
 
-	/* Only one pending command allowed. */
-	__ASSERT_NO_MSG(k_sem_count_get(&ipc->rsp_ready) == 0);
-	__ASSERT_NO_MSG(!k_work_is_pending(&ipc->rsp_work));
 
-	ipc->rsp.id  = cmd->id;
-	ipc->rsp.res = cmd->res;
+	ipc->local_response.id  = cmd->id;
+	ipc->local_response.res = cmd->res;
 
-	k_sem_give(&ipc->rsp_ready);
+	__ASSERT_NO_MSG(k_sem_count_get(&ipc->local_response.ready) == 0);
+	k_sem_give(&ipc->local_response.ready);
 }
 
 static void handle_remote_command(struct emp_ipc_data *ipc, const void *data, size_t len)
@@ -421,7 +401,7 @@ static void handle_remote_command(struct emp_ipc_data *ipc, const void *data, si
 		return;
 	}
 
-	switch (cmd->cmd) {
+	switch (cmd->code) {
 	case EMP_CMD_REGISTER:
 		handle_remote_command_register(ipc, data, len);
 		break;
@@ -435,7 +415,7 @@ static void handle_remote_command(struct emp_ipc_data *ipc, const void *data, si
 		break;
 
 	default:
-		LOG_ERR("Unsupported command %u", cmd->cmd);
+		LOG_ERR("Unsupported command %u", cmd->code);
 		__ASSERT_NO_MSG(false);
 		break;
 	}
@@ -560,9 +540,11 @@ static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instan
 	}
 
 	k_event_init(&ipc->bonded);
-	ret = k_sem_init(&ipc->rsp_ready, 0, 1);
+
+	ret = k_sem_init(&ipc->local_response.ready, 0, 1);
 	__ASSERT_NO_MSG(ret == 0);
-	k_work_init(&ipc->rsp_work, send_rsp_worker);
+
+	k_work_init(&ipc->remote_response.work, send_rsp_worker);
 
 	ipc->used = true;
 
@@ -607,7 +589,7 @@ static int send_register_command_to_remote(struct emp_ipc_data *ipc, const struc
 	uint8_t __aligned(4) buffer[size];
 
 	cmd = (struct emp_cmd_register*)buffer;
-	cmd->cmd = EMP_CMD_REGISTER;
+	cmd->code = EMP_CMD_REGISTER;
 	cmd->id  = local_event_id;
 	strcpy(cmd->name, remote_event_name);
 
@@ -622,16 +604,16 @@ static int send_register_command_to_remote(struct emp_ipc_data *ipc, const struc
 
 static int wait_for_register_respose(struct emp_ipc_data *ipc, const struct event_type *local_event_id)
 {
-	if (k_sem_take(&ipc->rsp_ready, EMP_RSP_TIMEOUT)) {
+	if (k_sem_take(&ipc->local_response.ready, EMP_RSP_TIMEOUT)) {
 		return -ETIME;
 	}
 
-	__ASSERT_NO_MSG(local_event_id == ipc->rsp.id);
-	if (local_event_id != ipc->rsp.id) {
+	__ASSERT_NO_MSG(local_event_id == ipc->local_response.id);
+	if (local_event_id != ipc->local_response.id) {
 		return -EFAULT;
 	}
 
-	return ipc->rsp.res;
+	return ipc->local_response.res;
 }
 
 int event_manager_proxy_register_listener(const struct device *instance,
@@ -652,7 +634,7 @@ int event_manager_proxy_register_listener(const struct device *instance,
 
 static int send_start_command_to_remote(struct emp_ipc_data *ipc)
 {
-	const struct emp_cmd cmd = {.cmd = EMP_CMD_START};
+	const struct emp_cmd cmd = {.code = EMP_CMD_START};
 
 	__ASSERT_NO_MSG(ipc);
 

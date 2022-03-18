@@ -17,11 +17,16 @@ LOG_MODULE_REGISTER(event_manager_proxy, CONFIG_EVENT_MANAGER_LOG_LEVEL);
 #define EMP_BIND_TIMEOUT K_MSEC(CONFIG_EVENT_MANAGER_PROXY_BOND_TIMEOUT_MS)
 #define EMP_RSP_TIMEOUT  K_MSEC(CONFIG_EVENT_MANAGER_PROXY_RSP_TIMEOUT_MS)
 
+/* Helpers - allow linker to get information about these structure sizes. */
+static struct event_type _emp_event_type_size_check
+	__used __attribute__((__section__("event_manager_proxy_event_type_size")));
+static struct event_type *_emp_event_type_pointer_size_check
+	__used __attribute__((__section__("event_manager_proxy_event_type_pointer_size")));
 
-/** @brief Data structure used by event manager proxy. */
-struct emp_data {
-	const struct event_type *event[CONFIG_EVENT_MANAGER_PROXY_CH_COUNT];
-};
+/* Array used for inter-core event type mapping. */
+extern struct event_type *event_manager_proxy_array[];
+extern struct event_type *_event_manager_proxy_array_list_end[];
+
 
 /** @brief Command codes used by the proxy. */
 enum emp_cmd_code {
@@ -110,24 +115,10 @@ struct emp_ipc_data {
 		const struct event_type *id;
 		int res;
 	} local_response;
+
+	const struct event_type **event_type_map;
 };
 
-
-/* Helpers - allow linker to get information about these structure sizes. */
-struct event_type event_manager_type_size_check
-	__attribute__((__section__("event_manager_type_size")));
-struct emp_data event_manger_proxy_type_ptr_size_check
-	__attribute__((__section__("event_manger_proxy_type_ptr_size")));
-
-/**
- * @brief Access to event proxy linker script section
- *
- * This section would contain an array of @ref event_manager_proxy_data
- * with the size matching number of events in the system.
- */
-extern struct emp_data event_manager_proxy_array[];
-
-extern struct emp_data __end_event_proxy_array[];
 
 /** @brief True if proxy was started. */
 static bool emp_started;
@@ -293,7 +284,7 @@ static void handle_remote_command_register(struct emp_ipc_data *ipc, const void 
 		size_t ctx_idx = ipc2idx(ipc);
 		size_t et_idx = et2idx(et);
 
-		event_manager_proxy_array[et_idx].event[ctx_idx] = cmd->id;
+		ipc->event_type_map[et_idx] = cmd->id;
 		LOG_DBG("Remote event %s registered on ipc %zu", log_strdup(cmd->name), ctx_idx);
 	}
 
@@ -408,20 +399,9 @@ static void handle_ipc_endpoint_error(const char *message, void *priv)
 	__ASSERT_NO_MSG(false);
 }
 
-static int event_manager_proxy_init(void)
-{
-	memset(event_manager_proxy_array,
-	       0,
-	       (char *)__end_event_proxy_array - (char *)event_manager_proxy_array);
-	return 0;
-}
-EVENT_MANAGER_HOOK_POSTINIT_REGISTER(event_manager_proxy_init);
-
 static int send_event_to_remote(struct emp_ipc_data *ipc, const struct event_header *eh)
 {
-	const struct emp_data *emp = &event_manager_proxy_array[et2idx(eh->type_id)];
-	const size_t ipc_idx = ipc - &emp_ipc_data[0];
-	const struct event_type *remote_ev = emp->event[ipc_idx];
+	const struct event_type *remote_ev = ipc->event_type_map[et2idx(eh->type_id)];
 
 	if (remote_ev == NULL) {
 		return 0;
@@ -482,6 +462,13 @@ static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instan
 		.priv = ipc
 	};
 
+	size_t event_type_count = _event_type_list_end - _event_type_list_start;
+	ipc->event_type_map = (void*)&event_manager_proxy_array[ipc2idx(ipc) * event_type_count];
+	__ASSERT_NO_MSG((char*)ipc->event_type_map < (char*)_event_manager_proxy_array_list_end);
+	__ASSERT_NO_MSG((char*)(ipc->event_type_map + event_type_count) <=
+			(char*)_event_manager_proxy_array_list_end);
+	memset(ipc->event_type_map, 0, event_type_count * sizeof(ipc->event_type_map[0]));
+
 	ret = ipc_service_register_endpoint(instance, &ipc->ept, &ipc->ept_cfg);
 	if (ret) {
 		LOG_ERR("Error registering endpoint in ipc service (%d)", ret);
@@ -502,13 +489,6 @@ static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instan
 
 int event_manager_proxy_add_remote(const struct device *instance)
 {
-	__ASSERT(
-		(__end_event_proxy_array - event_manager_proxy_array)
-		==
-		(_event_type_list_end - _event_type_list_start)
-		, "Event manager proxy array size does not match event type array size (%u != %u)",
-			(__end_event_proxy_array - event_manager_proxy_array),
-			(_event_type_list_end - _event_type_list_start));
 	__ASSERT_NO_MSG(find_ipc_by_instance(instance) == NULL);
 
 	for (size_t i = 0; i < ARRAY_SIZE(emp_ipc_data); ++i) {

@@ -198,17 +198,14 @@ static struct emp_ipc_data emp_ipc_data[CONFIG_EVENT_MANAGER_PROXY_CH_COUNT];
  */
 static struct emp_ipc_data *find_ipc_by_instance(const struct device *instance)
 {
-	struct emp_ipc_data *found = NULL;
-
-	for (size_t n = 0; n < ARRAY_SIZE(emp_ipc_data); ++n) {
-		if (emp_ipc_data[n].used) {
-			if (emp_ipc_data[n].ept.instance == instance) {
-				found = &emp_ipc_data[n];
-				break;
-			}
+	for (size_t i = 0; i < ARRAY_SIZE(emp_ipc_data); ++i) {
+		if ((emp_ipc_data[i].used) &&
+		    (emp_ipc_data[i].ept.instance == instance)) {
+			return &emp_ipc_data[i];
 		}
 	}
-	return found;
+
+	return NULL;
 }
 
 /**
@@ -221,15 +218,13 @@ static struct emp_ipc_data *find_ipc_by_instance(const struct device *instance)
  */
 static struct event_type *find_event_by_name(const char *name)
 {
-	struct event_type *found = NULL;
-
 	STRUCT_SECTION_FOREACH(event_type, et) {
 		if (!strcmp(et->name, name)) {
-			found = et;
-			break;
+			return et;
 		}
 	}
-	return found;
+
+	return NULL;
 }
 
 /**
@@ -241,8 +236,8 @@ static struct event_type *find_event_by_name(const char *name)
  */
 static size_t ev2idx(const struct event_type *et)
 {
-	__ASSERT_NO_MSG(et >= _event_type_list_start);
-	__ASSERT_NO_MSG(et <  _event_type_list_end);
+	ASSERT_EVENT_ID(et);
+
 	return et - _event_type_list_start;
 }
 
@@ -260,8 +255,8 @@ static size_t ept2idx(const void *priv)
 {
 	const struct emp_ipc_data *ipc = priv;
 
-	__ASSERT_NO_MSG(ipc >= emp_ipc_data);
-	__ASSERT_NO_MSG(ipc < (emp_ipc_data + CONFIG_EVENT_MANAGER_PROXY_CH_COUNT));
+	__ASSERT_NO_MSG(PART_OF_ARRAY(emp_ipc_data, ipc));
+
 	return ipc - emp_ipc_data;
 }
 
@@ -280,11 +275,10 @@ static void send_rsp_worker(struct k_work *work)
 		.id  = ipc->rsp.id,
 		.res = ipc->rsp.res
 	};
-	int ret;
 
 	__ASSERT_NO_MSG(k_sem_count_get(&ipc->rsp_ready) == 0);
 
-	ret = ipc_service_send(&ipc->ept, &rsp, sizeof(rsp));
+	int ret = ipc_service_send(&ipc->ept, &rsp, sizeof(rsp));
 	__ASSERT_NO_MSG(ret >= 0);
 }
 
@@ -325,11 +319,128 @@ static int submit_rsp(struct emp_ipc_data *ipc, const struct event_type *id, int
  *
  * @param priv The pointer of the related element of the @ref emp_ipc_data array.
  */
-static void ipc_ept_bound(void *priv)
+static void handle_ipc_endpoint_bound(void *priv)
 {
 	struct emp_ipc_data *ipc = priv;
 
 	k_event_set(&(ipc->bonded), 0x1);
+}
+
+static void handle_remote_event(struct emp_ipc_data *ipc, const void *data, size_t len)
+{
+	void *event = event_manager_alloc(len);
+
+	memcpy(event, data, len);
+	_event_submit(event);
+}
+
+static void handle_remote_command_register(struct emp_ipc_data *ipc, const void *data, size_t len)
+{
+	if (ipc->started) {
+		/* Reject if started. */
+		__ASSERT_NO_MSG(false);
+		return;
+	}
+
+	const struct emp_cmd_register *cmd = data;
+
+	/* At least 1 name character required. */
+	if (len < (sizeof(*cmd) + 2)) {
+		LOG_ERR("Unexpected command size: %zu", len);
+		__ASSERT_NO_MSG(false);
+		return;
+	}
+
+	struct event_type *et = find_event_by_name(cmd->name);
+	int ret = 0;
+
+	if (!et) {
+		LOG_ERR("Cannot register event: %s", log_strdup(cmd->name));
+		ret = -ENOENT;
+	} else {
+		size_t ctx_idx = ept2idx(ipc);
+		size_t ev_idx = ev2idx(et);
+
+		event_manager_proxy_array[ev_idx].event[ctx_idx] = cmd->id;
+		LOG_DBG("Remote event %s registered on ipc %zu", log_strdup(cmd->name), ctx_idx);
+	}
+
+	ret = submit_rsp(ipc, cmd->id, ret);
+	__ASSERT_NO_MSG(ret);
+}
+
+static void handle_remote_command_start(struct emp_ipc_data *ipc, const void *data, size_t len)
+{
+	if (ipc->started) {
+		/* Reject if started. */
+		__ASSERT_NO_MSG(false);
+		return;
+	}
+
+	ipc->started = true;
+
+	LOG_DBG("Event transmission on ipc %d started", ept2idx(ipc));
+
+	/* Check if all remote cores started. */
+	for (size_t i = 0; i < ARRAY_SIZE(emp_ipc_data); ++i) {
+		struct emp_ipc_data *ipc = &emp_ipc_data[i];
+
+		if (ipc->used && !ipc->started) {
+			return;
+		}
+	}
+
+	k_event_set(&emp_all_remotes_started, 0x1);
+}
+
+static void handle_remote_command_response(struct emp_ipc_data *ipc, const void *data, size_t len)
+{
+	const struct emp_cmd_rsp *cmd = data;
+
+	if (len != sizeof(*cmd)) {
+		LOG_ERR("Unexpected command size: %zu", len);
+		__ASSERT_NO_MSG(false);
+		return;
+	}
+
+	/* Only one pending command allowed. */
+	__ASSERT_NO_MSG(k_sem_count_get(&ipc->rsp_ready) == 0);
+	__ASSERT_NO_MSG(!k_work_is_pending(&ipc->rsp_work));
+
+	ipc->rsp.id  = cmd->id;
+	ipc->rsp.res = cmd->res;
+
+	k_sem_give(&ipc->rsp_ready);
+}
+
+static void handle_remote_command(struct emp_ipc_data *ipc, const void *data, size_t len)
+{
+	const struct emp_cmd *cmd = data;
+
+	if (len < sizeof(*cmd)) {
+		LOG_ERR("Unexpected command size: %zu", len);
+		__ASSERT_NO_MSG(false);
+		return;
+	}
+
+	switch (cmd->cmd) {
+	case EMP_CMD_REGISTER:
+		handle_remote_command_register(ipc, data, len);
+		break;
+
+	case EMP_CMD_START:
+		handle_remote_command_start(ipc, data, len);
+		break;
+
+	case EMP_CMD_RSP:
+		handle_remote_command_response(ipc, data, len);
+		break;
+
+	default:
+		LOG_ERR("Unsupported command %u", cmd->cmd);
+		__ASSERT_NO_MSG(false);
+		break;
+	}
 }
 
 /**
@@ -341,102 +452,17 @@ static void ipc_ept_bound(void *priv)
  * @param len  The length of the data received.
  * @param priv The pointer of the related element of the @ref emp_ipc_data array.
  */
-static void ipc_ept_recv(const void *data, size_t len, void *priv)
+static void handle_ipc_data_receive(const void *data, size_t len, void *priv)
 {
 	struct emp_ipc_data *ipc = priv;
 
-	/* We are expecting this callback to be called on the thread context */
+	/* Execute only from threads! */
 	__ASSERT_NO_MSG(!k_is_in_isr());
 
 	if (ipc->started && emp_started) {
-		/* Incoming event data - copy and submit */
-		void *ev = event_manager_alloc(len);
-
-		memcpy(ev, data, len);
-		_event_submit(ev);
+		handle_remote_event(ipc, data, len);
 	} else {
-		/* Incoming command - execute */
-		if (len < sizeof(struct emp_cmd)) {
-			LOG_ERR("Unexpected command size received: %u", len);
-			__ASSERT_NO_MSG(false);
-		}
-		switch (((struct emp_cmd *)data)->cmd) {
-		case EMP_CMD_REGISTER:
-		{
-			/* Only command responses are accepted after the interfacace is started */
-			__ASSERT_NO_MSG(!ipc->started);
-			/* Expecting valid command header and at least 1 name character */
-			if (len < (sizeof(struct emp_cmd_register) + 2)) {
-				LOG_ERR("Unexpected register command size (%u)", len);
-				__ASSERT_NO_MSG(false);
-			}
-			const struct emp_cmd_register *cmd = data;
-			struct event_type *et = find_event_by_name(cmd->name);
-			int ret = 0;
-
-			if (!et) {
-				LOG_ERR("Cannot find requested event: \"%s\"",
-					log_strdup(cmd->name));
-				ret = -ENOENT;
-			} else {
-				size_t context_idx = ept2idx(priv);
-				size_t ev_idx = ev2idx(et);
-
-				event_manager_proxy_array[ev_idx].event[context_idx] = cmd->id;
-				LOG_DBG("Remote event registered for \"%s\" -> ipc %d",
-					log_strdup(cmd->name),
-					context_idx);
-			}
-			ret = submit_rsp(ipc, cmd->id, ret);
-			__ASSERT_NO_MSG(ret);
-			break;
-		}
-		case EMP_CMD_START:
-		{
-			/* Only command responses are accepted after the interfacace is started */
-			__ASSERT_NO_MSG(!ipc->started);
-			unsigned int n;
-			bool all_started;
-
-			ipc->started = true;
-			LOG_DBG("Event transmission on ipc %d started", ept2idx(priv));
-			/* Check if all remote cores are started and mark the fact */
-			for (n = 0, all_started = true; n < ARRAY_SIZE(emp_ipc_data); ++n) {
-				struct emp_ipc_data *ipc_data = &emp_ipc_data[n];
-
-				if (ipc_data->used && !ipc_data->started) {
-					all_started = false;
-					break;
-				}
-			}
-			if (all_started) {
-				k_event_set(&emp_all_remotes_started, 0x1);
-			}
-			break;
-		}
-		case EMP_CMD_RSP:
-		{
-			if (len > sizeof(struct emp_cmd_rsp)) {
-				LOG_ERR("Unexpected command response received: %u", len);
-				__ASSERT_NO_MSG(false);
-			}
-			/** This should never happen that we have a valid data in a response copy
-			 *  when new response is received.
-			 */
-			__ASSERT_NO_MSG(k_sem_count_get(&ipc->rsp_ready) == 0);
-			__ASSERT_NO_MSG(!k_work_is_pending(&ipc->rsp_work));
-			const struct emp_cmd_rsp *rsp = data;
-
-			ipc->rsp.id  = rsp->id;
-			ipc->rsp.res = rsp->res;
-			k_sem_give(&ipc->rsp_ready);
-			break;
-		}
-		default:
-			LOG_ERR("Unsupported command received: %u", ((struct emp_cmd *)data)->cmd);
-			__ASSERT_NO_MSG(false);
-			break;
-		}
+		handle_remote_command(ipc, data, len);
 	}
 }
 
@@ -446,7 +472,7 @@ static void ipc_ept_recv(const void *data, size_t len, void *priv)
  * @param message The message from the backend.
  * @param priv    The pointer of the related element of the @ref emp_ipc_data array.
  */
-static void ipc_ept_error(const char *message, void *priv)
+static void handle_ipc_endpoint_error(const char *message, void *priv)
 {
 	LOG_ERR("Endpoint error: \"%s\"", log_strdup(message));
 	__ASSERT_NO_MSG(false);
@@ -522,9 +548,9 @@ static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instan
 	ipc->ept_cfg = (struct ipc_ept_cfg) {
 		.name = "event_manager_proxy",
 		.cb = {
-			.bound    = ipc_ept_bound,
-			.received = ipc_ept_recv,
-			.error    = ipc_ept_error
+			.bound    = handle_ipc_endpoint_bound,
+			.received = handle_ipc_data_receive,
+			.error    = handle_ipc_endpoint_error
 		},
 		.priv = ipc
 	};
@@ -652,11 +678,13 @@ int event_manager_proxy_start(void)
 	__ASSERT_NO_MSG(!emp_started);
 
 	for (size_t i = 0; (i < ARRAY_SIZE(emp_ipc_data)) && !ret; ++i) {
+		struct emp_ipc_data *ipc = &emp_ipc_data[i];
+
 		if (!ipc->used) {
 			continue;
 		}
 
-		ret = send_start_command(&emp_ipc_data[i]);
+		ret = send_start_command(ipc);
 	}
 
 	if (!ret) {

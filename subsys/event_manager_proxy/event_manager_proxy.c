@@ -566,21 +566,14 @@ static int send_register_command(struct emp_ipc_data *ipc, const struct event_ty
 	/* Preparing and sending the command */
 	struct emp_cmd_register *cmd;
 	size_t size = sizeof(*cmd) + strlen(remote_event_name) + 1;
+	uint8_t __aligned(4) buffer[size];
 
-	cmd = k_malloc(size);
-
-	if (cmd == NULL) {
-		LOG_ERR("No mem");
-		return -ENOMEM;
-	}
-
+	cmd = (struct emp_cmd_register*)buffer;
 	cmd->cmd = EMP_CMD_REGISTER;
 	cmd->id  = local_event_id;
 	strcpy(cmd->name, remote_event_name);
 
 	int ret = ipc_service_send(&ipc->ept, cmd, size);
-
-	k_free(cmd);
 
 	if (ret < 0) {
 		return ret;

@@ -41,6 +41,7 @@ Application that wish to use Event Manager proxy requires special initialization
 Event Manager proxy it initialized together with the event_manager:
 
     .. code-block:: c
+
        /* Initialize Event Manager and Event Manager proxy */
        ret = event_manager_init();
        /* Error handling */
@@ -48,6 +49,7 @@ Event Manager proxy it initialized together with the event_manager:
 After initialization all remote IPC instances need to be added:
 
     .. code-block:: c
+
        ret = event_manager_proxy_add_remote(ipc1_instance);
        /* Error handling */
        ret = event_manager_proxy_add_remote(ipc2_instance);
@@ -58,6 +60,7 @@ This may be done by :c:func:`event_manager_proxy_register_listener` by passing a
 The auxiliary macro :c:macro:`EVENT_MANAGER_PROXY_REGISTER_LISTENER` prepares all the arguments identifiers using the event definition:
 
     .. code-block:: c
+
        #include <event1_definition_file.h>
        #include <event2_definition_file.h>
 
@@ -69,6 +72,7 @@ The auxiliary macro :c:macro:`EVENT_MANAGER_PROXY_REGISTER_LISTENER` prepares al
 When all the events are registered it is time to configure the Event Manager proxy into active state:
 
     .. code-block:: c
+
        ret = event_manager_proxy_start();
        /* Error handling */
 

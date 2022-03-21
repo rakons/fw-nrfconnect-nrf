@@ -213,6 +213,7 @@ static void send_rsp_worker(struct k_work *work)
 	};
 
 	int ret = ipc_service_send(&ipc->ept, &rsp, sizeof(rsp));
+
 	__ASSERT_NO_MSG(ret >= 0);
 }
 
@@ -408,13 +409,14 @@ static int send_event_to_remote(struct emp_ipc_data *ipc, const struct event_hea
 	}
 
 	size_t size = event_manager_event_size(eh);
-	uint8_t __aligned(4) buffer[size];
+	uint32_t buffer[ceiling_fraction(size, sizeof(uint32_t))];
 	struct event_header *remote_eh = (struct event_header *)buffer;
 
 	memcpy(buffer, eh, sizeof(buffer));
 	remote_eh->type_id = remote_ev;
 
 	int ret = ipc_service_send(&ipc->ept, buffer, sizeof(buffer));
+
 	if (ret < 0) {
 		LOG_ERR("Cannot send event to remote %p", ipc);
 		__ASSERT_NO_MSG(false);
@@ -446,6 +448,7 @@ EVENT_HOOK_POSTPROCESS_REGISTER(event_manager_proxy_on_event_process);
 static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instance)
 {
 	int ret = ipc_service_open_instance(instance);
+
 	if (ret && ret != -EALREADY) {
 		LOG_ERR("IPC service open instance failure: %d", ret);
 		return ret;
@@ -463,10 +466,11 @@ static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instan
 	};
 
 	size_t event_type_count = _event_type_list_end - _event_type_list_start;
-	ipc->event_type_map = (void*)&event_manager_proxy_array[ipc2idx(ipc) * event_type_count];
-	__ASSERT_NO_MSG((char*)ipc->event_type_map < (char*)_event_manager_proxy_array_list_end);
-	__ASSERT_NO_MSG((char*)(ipc->event_type_map + event_type_count) <=
-			(char*)_event_manager_proxy_array_list_end);
+
+	ipc->event_type_map = (void *)&event_manager_proxy_array[ipc2idx(ipc) * event_type_count];
+	__ASSERT_NO_MSG((char *)ipc->event_type_map < (char *)_event_manager_proxy_array_list_end);
+	__ASSERT_NO_MSG((char *)(ipc->event_type_map + event_type_count) <=
+			(char *)_event_manager_proxy_array_list_end);
 	memset(ipc->event_type_map, 0, event_type_count * sizeof(ipc->event_type_map[0]));
 
 	ret = ipc_service_register_endpoint(instance, &ipc->ept, &ipc->ept_cfg);
@@ -502,8 +506,9 @@ int event_manager_proxy_add_remote(const struct device *instance)
 	return -ENOMEM;
 }
 
-static int send_register_command_to_remote(struct emp_ipc_data *ipc, const struct event_type *local_event_id,
-		const char *remote_event_name)
+static int send_register_command_to_remote(struct emp_ipc_data *ipc,
+					   const struct event_type *local_event_id,
+					   const char *remote_event_name)
 {
 	__ASSERT_NO_MSG(ipc);
 
@@ -515,9 +520,9 @@ static int send_register_command_to_remote(struct emp_ipc_data *ipc, const struc
 	/* Preparing and sending the command */
 	struct emp_cmd_register *cmd;
 	size_t size = sizeof(*cmd) + strlen(remote_event_name) + 1;
-	uint8_t __aligned(4) buffer[size];
+	uint32_t buffer[ceiling_fraction(size, sizeof(uint32_t))];
 
-	cmd = (struct emp_cmd_register*)buffer;
+	cmd = (struct emp_cmd_register *)buffer;
 	cmd->code = EMP_CMD_REGISTER;
 	cmd->id  = local_event_id;
 	strcpy(cmd->name, remote_event_name);
@@ -573,6 +578,7 @@ static int send_start_command_to_remote(struct emp_ipc_data *ipc)
 	}
 
 	int ret = ipc_service_send(&ipc->ept, &cmd, sizeof(cmd));
+
 	if (ret < 0) {
 		return ret;
 	}

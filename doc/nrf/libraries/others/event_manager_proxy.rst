@@ -59,10 +59,9 @@ This may be done by :c:func:`event_manager_proxy_register_listener` by passing a
 The auxiliary macro :c:macro:`EVENT_MANAGER_PROXY_REGISTER_LISTENER` prepares all the arguments identifiers using the event definition:
 
     .. code-block:: c
-       
        #include <event1_definition_file.h>
        #include <event2_definition_file.h>
-       
+
        ret = EVENT_MANAGER_PROXY_REGISTER_LISTENER(ipc1_instance, event1);
        /* Error handling */
        ret = EVENT_MANAGER_PROXY_REGISTER_LISTENER(ipc1_instance, event2);
@@ -134,7 +133,7 @@ This way remote can copy it as is and use it as its own local event.
 Passing the event from remote core
 ==================================
 
-After the remote and local core started the Event Manager proxy by the calling of the :c:func:`event_manager_proxy_start` function, every incomming data is treated as a single event.
+After the remote and local core started the Event Manager proxy by the calling of the :c:func:`event_manager_proxy_start` function, every incoming data is treated as a single event.
 New event is allocated by the usage of :c:func:`event_manager_alloc` function and the it is just submitted to the event queue by the :c:func:`_event_submit`.
 Since that very moment the event is treated the same like any locally generated event.
 

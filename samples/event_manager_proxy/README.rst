@@ -55,7 +55,7 @@ Configuration
 
 Building and running
 ********************
-.. |sample path| replace:: :file: samples/event_manager_proxy
+.. |sample path| replace:: :file:`samples/event_manager_proxy`
 
 .. include:: /includes/build_and_run.txt
 

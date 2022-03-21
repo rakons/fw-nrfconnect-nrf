@@ -10,7 +10,6 @@ config EVENT_MANAGER_PROXY
 	depends on IPC_SERVICE
 	select EVENTS
 	select EVENT_MANAGER_PROVIDE_EVENT_SIZE
-	select EVENT_MANAGER_POSTINIT_HOOK
 	select EVENT_MANAGER_POSTPROCESS_HOOKS
 	help
 	  Event manager proxy would take care of passing the events between the different cores.

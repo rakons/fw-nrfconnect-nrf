@@ -33,12 +33,4 @@ config EVENT_MANAGER_PROXY_BOND_TIMEOUT_MS
 	  This timeout depends on the time to initialize all the cores
 	  the event proxy manager is going to communicate.
 
-config EVENT_MANAGER_PROXY_RSP_TIMEOUT_MS
-	int "Timeout while waiting for command response"
-	range 1 100
-	default 10
-	help
-	  The time given for the event manager proxy on another core
-	  to process the command.
-
 #endif # EVENT_MANAGER_PROXY

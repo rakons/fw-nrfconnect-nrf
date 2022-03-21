@@ -30,7 +30,6 @@ You can also set the following Kconfig options when working with Event Manager p
   This option should reflect the number of cores where the events should be exchanged.
   Note that having 2 cores means that we exchange events with 1.
 * :kconfig:`EVENT_MANAGER_PROXY_BOND_TIMEOUT_MS` - The timeout when bonding.
-* :kconfig:`EVENT_MANAGER_PROXY_RSP_TIMEOUT_MS` - The timeout when waiting for response.
 
 Implementing proxy for Event Manager
 ************************************

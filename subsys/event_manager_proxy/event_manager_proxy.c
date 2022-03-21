@@ -15,7 +15,6 @@ LOG_MODULE_REGISTER(event_manager_proxy, CONFIG_EVENT_MANAGER_LOG_LEVEL);
 
 
 #define EMP_BIND_TIMEOUT K_MSEC(CONFIG_EVENT_MANAGER_PROXY_BOND_TIMEOUT_MS)
-#define EMP_RSP_TIMEOUT  K_MSEC(CONFIG_EVENT_MANAGER_PROXY_RSP_TIMEOUT_MS)
 
 /* Helpers - allow linker to get information about these structure sizes. */
 static struct event_type _emp_event_type_size_check
@@ -35,9 +34,6 @@ enum emp_cmd_code {
 
 	/** Start event transmission. No commands after this point, only events. */
 	EMP_CMD_START,
-
-	/** Command response. */
-	EMP_CMD_RSP,
 
 	/** Number of commands. */
 	EMP_CMD_COUNT
@@ -65,26 +61,6 @@ struct emp_cmd_register {
 	char name[];
 };
 
-/**
- * @brief The response command structure.
- */
-struct emp_cmd_rsp {
-	/** The command code. */
-	enum emp_cmd_code code;
-
-	/** The command identifier.
-	 *
-	 *  The identifier of the command for this response:
-	 *  - For the @ref EMB_CMD_REGISTER command it is set to the value of
-	 *    @ref event_manager_proxy_cmd_register::id.
-	 *  - For the @ref EMB_CMD_START command it is set to NULL.
-	 */
-	const struct event_type *id;
-
-	/** The operation result code. */
-	int res;
-};
-
 /** @brief Inter-core communication data. */
 struct emp_ipc_data {
 	/** IPC ndpoint. */
@@ -101,20 +77,6 @@ struct emp_ipc_data {
 
 	/** Event triggered when IPC is bound. Never clear. */
 	struct k_event bound;
-
-	/** Deferred response to remote request. */
-	struct remote_response {
-		struct k_work work;
-		const struct event_type *id;
-		int res;
-	} remote_response;
-
-	/** Local response. */
-	struct local_response {
-		struct k_sem ready;
-		const struct event_type *id;
-		int res;
-	} local_response;
 
 	const struct event_type **event_type_map;
 };
@@ -198,47 +160,6 @@ static size_t ipc2idx(const struct emp_ipc_data *ipc)
 }
 
 /**
- * @brief Worker sending deferred command response.
- *
- * @param work The pointer to @ref emp_ipc_data::remote_response::work.
- */
-static void send_rsp_worker(struct k_work *work)
-{
-	struct emp_ipc_data *ipc = CONTAINER_OF(CONTAINER_OF(work, struct remote_response, work),
-						struct emp_ipc_data, remote_response);
-	const struct emp_cmd_rsp rsp = {
-		.code = EMP_CMD_RSP,
-		.id  = ipc->remote_response.id,
-		.res = ipc->remote_response.res
-	};
-
-	int ret = ipc_service_send(&ipc->ept, &rsp, sizeof(rsp));
-
-	__ASSERT_NO_MSG(ret >= 0);
-}
-
-/**
- * @brief Submit the response to the received command
- *
- * @param ipc The structure that describes remote connection.
- * @param id  The identifier of the command for which we are responding.
- * @param res The result code.
- *
- * @retval 0 Function finished successfully.
- * @retval other The error code.
- */
-static int send_response_to_remote(struct emp_ipc_data *ipc, const struct event_type *id, int res)
-{
-	ipc->remote_response.id = id;
-	ipc->remote_response.res = res;
-
-	/* Defer response to workqueue to allow IPC buffer being freed.
-	 * If done directly can cause lock when no buffers available.
-	 */
-	return k_work_submit(&ipc->remote_response.work);
-}
-
-/**
  * @brief The IPC endpoint bound by remote.
  *
  * @param priv The pointer of the related element of the @ref emp_ipc_data array.
@@ -276,11 +197,9 @@ static void handle_remote_command_register(struct emp_ipc_data *ipc, const void 
 	}
 
 	struct event_type *et = find_event_by_name(cmd->name);
-	int ret = 0;
 
 	if (!et) {
 		LOG_ERR("Cannot register event: %s", log_strdup(cmd->name));
-		ret = -ENOENT;
 	} else {
 		size_t ctx_idx = ipc2idx(ipc);
 		size_t et_idx = et2idx(et);
@@ -288,9 +207,6 @@ static void handle_remote_command_register(struct emp_ipc_data *ipc, const void 
 		ipc->event_type_map[et_idx] = cmd->id;
 		LOG_DBG("Remote event %s registered on ipc %zu", log_strdup(cmd->name), ctx_idx);
 	}
-
-	ret = send_response_to_remote(ipc, cmd->id, ret);
-	__ASSERT_NO_MSG(ret);
 }
 
 static void handle_remote_command_start(struct emp_ipc_data *ipc, const void *data, size_t len)
@@ -317,24 +233,6 @@ static void handle_remote_command_start(struct emp_ipc_data *ipc, const void *da
 	k_event_set(&emp_all_remotes_started, 0x1);
 }
 
-static void handle_remote_command_response(struct emp_ipc_data *ipc, const void *data, size_t len)
-{
-	const struct emp_cmd_rsp *cmd = data;
-
-	if (len != sizeof(*cmd)) {
-		LOG_ERR("Unexpected command size: %zu", len);
-		__ASSERT_NO_MSG(false);
-		return;
-	}
-
-
-	ipc->local_response.id  = cmd->id;
-	ipc->local_response.res = cmd->res;
-
-	__ASSERT_NO_MSG(k_sem_count_get(&ipc->local_response.ready) == 0);
-	k_sem_give(&ipc->local_response.ready);
-}
-
 static void handle_remote_command(struct emp_ipc_data *ipc, const void *data, size_t len)
 {
 	const struct emp_cmd *cmd = data;
@@ -352,10 +250,6 @@ static void handle_remote_command(struct emp_ipc_data *ipc, const void *data, si
 
 	case EMP_CMD_START:
 		handle_remote_command_start(ipc, data, len);
-		break;
-
-	case EMP_CMD_RSP:
-		handle_remote_command_response(ipc, data, len);
 		break;
 
 	default:
@@ -481,11 +375,6 @@ static int add_ipc_instace(struct emp_ipc_data *ipc, const struct device *instan
 
 	k_event_init(&ipc->bound);
 
-	ret = k_sem_init(&ipc->local_response.ready, 0, 1);
-	__ASSERT_NO_MSG(ret == 0);
-
-	k_work_init(&ipc->remote_response.work, send_rsp_worker);
-
 	ipc->used = true;
 
 	return 0;
@@ -536,20 +425,6 @@ static int send_register_command_to_remote(struct emp_ipc_data *ipc,
 	return 0;
 }
 
-static int wait_for_register_respose(struct emp_ipc_data *ipc, const struct event_type *local_event_id)
-{
-	if (k_sem_take(&ipc->local_response.ready, EMP_RSP_TIMEOUT)) {
-		return -ETIME;
-	}
-
-	__ASSERT_NO_MSG(local_event_id == ipc->local_response.id);
-	if (local_event_id != ipc->local_response.id) {
-		return -EFAULT;
-	}
-
-	return ipc->local_response.res;
-}
-
 int event_manager_proxy_register_listener(const struct device *instance,
 		const struct event_type *local_event_id, const char *remote_event_name)
 {
@@ -557,13 +432,7 @@ int event_manager_proxy_register_listener(const struct device *instance,
 
 	struct emp_ipc_data *ipc = find_ipc_by_instance(instance);
 
-	int ret = send_register_command_to_remote(ipc, local_event_id, remote_event_name);
-
-	if (!ret) {
-		ret = wait_for_register_respose(ipc, local_event_id);
-	}
-
-	return ret;
+	return send_register_command_to_remote(ipc, local_event_id, remote_event_name);
 }
 
 static int send_start_command_to_remote(struct emp_ipc_data *ipc)

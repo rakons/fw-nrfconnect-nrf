@@ -62,7 +62,8 @@ Building and running
 Please note that in current sample construction it is required to flash the board with host and remote code.
 This can be done using west, starting from this sample directory:
 
-.. msc::
+.. code-block:: console
+
    west build -b nrf5340dk_nrf5340_cpuapp .
    west flash
    cd build/event_manager_proxy_remote-prefix/src/event_manager_proxy_remote-build/

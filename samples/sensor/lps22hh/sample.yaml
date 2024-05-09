@@ -1,0 +1,10 @@
+sample:
+  name: LPS22HH Sensor Sample
+tests:
+  sample.sensor.lps22hh.nrf54h20_sensor_board:
+    integration_platforms:
+      - nrf54h20dk_nrf54h20_cpuapp
+    platform_allow: >-
+      nrf54h20dk_nrf54h20_cpuapp
+    tags: sensors
+    extra_args: SHIELD="nrf54h20_sensor_board"

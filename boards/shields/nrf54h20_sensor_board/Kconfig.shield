@@ -1,0 +1,7 @@
+#
+# Copyright (c) 2024 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+#
+config SHIELD_NRF54L15_SENSOR_BOARD
+	def_bool $(shields_list_contains,nrf54l15_sensor_board)
